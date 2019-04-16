@@ -2,6 +2,7 @@
 // Stratum interface class
 // Copyright 2018 The Beam Team	
 // Copyright 2018 Wilke Trei
+// Copyright 2019 Andrei Dimitrief-Jianu
 
 #include <iostream>
 #include <thread>
@@ -50,6 +51,11 @@ class beamStratum {
 	string port;
 	string apiKey;
 	bool debug = true;
+	bool quiet = false;
+
+	bool connecting = false;
+	bool connected = false;
+	int32_t connectAttempts = 2;
 
 	// Storage for received work
 	int64_t workId;
@@ -85,8 +91,9 @@ class beamStratum {
 	void submitSolution(int64_t, uint64_t, const std::vector<uint8_t>&);
 
 	public:
-	beamStratum(string, string, string, bool);
+	beamStratum(string, string, string, bool, bool);
 	void startWorking();
+	void stopWorking();
 
 	struct WorkDescription
 	{
@@ -95,6 +102,8 @@ class beamStratum {
 		beam::Difficulty powDiff;
 	};
 
+	bool isConnecting();
+	bool hasConnection();
 	bool hasWork();
 	void getWork(WorkDescription&, uint8_t*);
 

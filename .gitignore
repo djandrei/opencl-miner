@@ -13,3 +13,7 @@ beam-opencl-miner.exe
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
+
+*.ipch
+*.bin
+

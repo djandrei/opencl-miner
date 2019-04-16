@@ -2,6 +2,7 @@
 // OpenCL Host Interface
 // Copyright 2018 The Beam Team	
 // Copyright 2018 Wilke Trei
+// Copyright 2019 Andrei Dimitrief-Jianu
 
 #include <CL/cl.hpp>
 #include <iostream>
@@ -15,15 +16,19 @@
 
 #include "beamStratum.h"
 
-namespace beamMiner {
+namespace beamMiner 
+{
 
-struct clCallbackData {
-	void* host;
+struct clCallbackData 
+{
 	uint32_t gpuIndex;
-	beamStratum::WorkDescription wd;
+	beamStratum* stratum;
+	beamStratum::WorkDescription workDescription;
+	void* clHost;
 };
 
-class clHost {
+class clHost 
+{
 	private:
 	// OpenCL 
 	vector<cl::Platform> platforms;  
@@ -44,22 +49,28 @@ class clHost {
 	// To check if a mining thread stoped and we must resume it
 	vector<bool> paused;
 
+	vector<int32_t> intensities;
+
 	// Callback data
 	vector<clCallbackData> currentWork;
 	bool restart = true;
 
-
 	// Functions
-	void detectPlatFormDevices(vector<int32_t>, bool, bool);
-	void loadAndCompileKernel(cl::Device &, uint32_t, bool);
+	void detectPlatformDevices(vector<int32_t>, vector<int32_t>, bool, bool);
+	bool loadAndCompileKernel(cl::Device &, uint32_t, bool);
 	void queueKernels(uint32_t, clCallbackData*);
+	void queueWork(uint32_t, clCallbackData*); 
 	
-	// The connector
-	beamStratum* stratum;
+	// The connectors
+	beamStratum* minerStratum;
+
+	atomic_uint64_t workCounter;
+	uint64_t workCounterMinModulo;
+	uint64_t workCounterMaxModulo;
 
 	public:
 	
-	void setup(beamStratum*, vector<int32_t>, bool, bool);
+	clHost(beamStratum*, vector<int32_t>, vector<int32_t>, bool, bool);
 	void startMining();	
 	void callbackFunc(cl_int, void*);
 };

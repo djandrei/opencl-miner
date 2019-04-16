@@ -1,10 +1,11 @@
 cmake_minimum_required(VERSION 3.1) 
+
 project(beam-opencl-miner)
+
 set(TARGET_NAME beam-opencl-miner)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
 
 set(Boost_USE_MULTITHREADED ON)
 set(Boost_USE_STATIC_LIBS ON)
@@ -59,6 +60,7 @@ set (HEADERS
 )
 
 set(MINER_SRC
+    base64.cpp
     beamStratum.cpp
     clHost.cpp
     main.cpp
@@ -90,5 +92,5 @@ target_link_libraries(${TARGET_NAME} OpenCL::OpenCL)
 target_link_libraries(${TARGET_NAME} ${OPENSSL_SSL_LIBRARY} ${OPENSSL_CRYPTO_LIBRARY})
 target_link_libraries(${TARGET_NAME} ${Boost_LIBRARIES})
 if(UNIX)
-target_link_libraries(${TARGET_NAME} -ldl)
+target_link_libraries(${TARGET_NAME} -ldl -lz)
 endif()

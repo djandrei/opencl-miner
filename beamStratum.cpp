@@ -2,7 +2,7 @@
 // Stratum interface class
 // Copyright 2018 The Beam Team	
 // Copyright 2018 Wilke Trei
-
+// Copyright 2019 Andrei Dimitrief-Jianu
 
 #include "beamStratum.h"
 #include "crypto/sha256.c"
@@ -12,23 +12,27 @@
 #define htobe32(x) OSSwapHostToBigInt32(x)
 #endif
 
-namespace beamMiner {
+namespace beamMiner 
+{
 
 // This one ensures that the calling thread can work on immediately
-void beamStratum::queueDataSend(string data) {
+void beamStratum::queueDataSend(string data) 
+{
 	io_service.post(boost::bind(&beamStratum::syncSend,this, data)); 
 }
 
 // Function to add a string into the socket write queue
-void beamStratum::syncSend(string data) {
+void beamStratum::syncSend(string data) 
+{
 	writeRequests.push_back(data);
 	activateWrite();
 }
 
-
 // Got granted we can write to our connection, lets do so	
-void beamStratum::activateWrite() {
-	if (!activeWrite && writeRequests.size() > 0) {
+void beamStratum::activateWrite() 
+{
+	if (!activeWrite && writeRequests.size() > 0) 
+	{
 		activeWrite = true;
 
 		string json = writeRequests.front();
@@ -36,199 +40,281 @@ void beamStratum::activateWrite() {
 
 		std::ostream os(&requestBuffer);
 		os << json;
-		if (debug) cout << "Write to connection: " << json;
+		if (!quiet && debug) cout << "Write to connection: " << json;
 
-		boost::asio::async_write(*socket, requestBuffer, boost::bind(&beamStratum::writeHandler,this, boost::asio::placeholders::error)); 		
+		boost::asio::async_write(
+			*socket, 
+			requestBuffer, 
+			boost::bind(&beamStratum::writeHandler,this, boost::asio::placeholders::error)); 		
 	}
 }
-	
 
 // Once written check if there is more to write
-void beamStratum::writeHandler(const boost::system::error_code& err) {
+void beamStratum::writeHandler(const boost::system::error_code& err) 
+{
 	activeWrite = false;
 	activateWrite(); 
-	if (err) {
-		if (debug) cout << "Write to stratum failed: " << err.message() << endl;
+	if (err) 
+	{
+		if (!quiet && debug) cout << "Write to stratum failed: " << err.message() << endl;
 	} 
 }
 
+void beamStratum::stopWorking()
+{
+	workId = -1;
+	io_service.reset();
+	socket->lowest_layer().close();
+}
 
 // Called by main() function, starts the stratum client thread
-void beamStratum::startWorking(){
+void beamStratum::startWorking()
+{
 	t_start = time(NULL);
 	std::thread (&beamStratum::connect,this).detach();
+
+	connecting = true;
+	connected = true;
 }
 
 // This function will be used to establish a connection to the API server
-void beamStratum::connect() {	
-	while (true) {
+void beamStratum::connect() 
+{
+	int32_t connectionCount = 0;
+
+	while (connectionCount < connectAttempts) 
+	{
+		connectionCount++;
+
+		if (!quiet && debug)
+		{
+			cout << endl;
+			cout << "beamStratum::connect()" << endl;
+			cout << "host:  " << host << endl;
+			cout << "port:  " << port << endl;
+			cout << "key:   " << apiKey << endl;
+			cout << endl;
+		}
+
 		tcp::resolver::query q(host, port); 
 
-		cout << "Connecting to " << host << ":" << port << endl;
-		try {
-	    		tcp::resolver::iterator endpoint_iterator = res.resolve(q);
+		if (!quiet) cout << "Attempting connection to " << host << ":" << port << endl;
+		try 
+		{
+	    	tcp::resolver::iterator endpoint_iterator = res.resolve(q);
 			tcp::endpoint endpoint = *endpoint_iterator;
 			socket.reset(new boost::asio::ssl::stream<tcp::socket>(io_service, context));
+			
+			// socket with timeout set to X seconds;
+			unsigned int timeout_milli = 20000;
 
+#if defined _WIN32 || defined WIN32 || defined OS_WIN64 || defined _WIN64 || defined WIN64 || defined WINNT
+  			// use windows-specific time
+  			int32_t timeout = timeout_milli;
+  			setsockopt(socket->lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+  			setsockopt(socket->lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+#else
+  			// assume everything else is posix
+  			struct timeval tv;
+  			tv.tv_sec  = timeout_milli / 1000;
+  			tv.tv_usec = timeout_milli % 1000;
+  			setsockopt(socket->lowest_layer().native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  			setsockopt(socket->lowest_layer().native_handle(), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+			
 			socket->set_verify_mode(boost::asio::ssl::verify_none);
-    			socket->set_verify_callback(boost::bind(&beamStratum::verifyCertificate, this, _1, _2));
+    		socket->set_verify_callback(boost::bind(&beamStratum::verifyCertificate, this, _1, _2));
 
-			socket->lowest_layer().async_connect(endpoint,
-			boost::bind(&beamStratum::handleConnect, this, boost::asio::placeholders::error, ++endpoint_iterator));	
+			socket->lowest_layer().async_connect(
+				endpoint,
+				boost::bind(&beamStratum::handleConnect, this, boost::asio::placeholders::error, ++endpoint_iterator));	
 
 			io_service.run();
-		} catch (std::exception const& _e) {
-			 cout << "Stratum error: " <<  _e.what() << endl;
+		} 
+		catch (std::exception const& _e) 
+		{
+			if (!quiet) cout << "Stratum error: " <<  _e.what() << endl;
 		}
 
 		workId = -1;
 		io_service.reset();
 		socket->lowest_layer().close();
 
-		cout << "Lost connection to BEAM stratum server" << endl;
-		cout << "Trying to connect in 5 seconds"<< endl;
+		if (!quiet) cout << "Lost connection to BEAM stratum server" << endl;
 
 		std::this_thread::sleep_for(std::chrono::seconds(5));
-	}		
+	}
+
+	connecting = false;
+	connected = false;
 }
 
-
 // Once the physical connection is there start a TLS handshake
-void beamStratum::handleConnect(const boost::system::error_code& err, tcp::resolver::iterator endpoint_iterator) {
-	if (!err) {
-	cout << "Connected to node. Starting TLS handshake." << endl;
+void beamStratum::handleConnect(const boost::system::error_code& err, tcp::resolver::iterator endpoint_iterator) 
+{
+	if (!err) 
+	{
+		if (!quiet) cout << "Connected to node. Starting TLS handshake." << endl;
 
       	// The connection was successful. Do the TLS handshake
-	socket->async_handshake(boost::asio::ssl::stream_base::client,boost::bind(&beamStratum::handleHandshake, this, boost::asio::placeholders::error));
+		socket->async_handshake(
+			boost::asio::ssl::stream_base::client,
+			boost::bind(&beamStratum::handleHandshake, this, boost::asio::placeholders::error));
 	
-    	} else if (err != boost::asio::error::operation_aborted) {
-		if (endpoint_iterator != tcp::resolver::iterator()) {
+    } 
+	else if (err != boost::asio::error::operation_aborted) 
+	{
+		if (endpoint_iterator != tcp::resolver::iterator()) 
+		{
 			// The endpoint did not work, but we can try the next one
 			tcp::endpoint endpoint = *endpoint_iterator;
 
-			socket->lowest_layer().async_connect(endpoint,
-			boost::bind(&beamStratum::handleConnect, this, boost::asio::placeholders::error, ++endpoint_iterator));
+			socket->lowest_layer().async_connect(
+				endpoint,
+				boost::bind(&beamStratum::handleConnect, this, boost::asio::placeholders::error, ++endpoint_iterator));
 		} 
-	} 	
-}
-
-
-// Dummy function: we will not verify if the endpoint is verified at the moment,
-// still there is a TLS handshake, so connection is encrypted
-bool beamStratum::verifyCertificate(bool preverified, boost::asio::ssl::verify_context& ctx){
-	return true;
-}
-
-
-void beamStratum::handleHandshake(const boost::system::error_code& error) {
-	if (!error) {
-		// Listen to receive stratum input
-		boost::asio::async_read_until(*socket, responseBuffer, "\n",
-		boost::bind(&beamStratum::readStratum, this, boost::asio::placeholders::error));
-
-		cout << "TLS Handshake sucess" << endl;
-		
-		// The connection was successful. Send the login request
-		std::stringstream json;
-		json << "{\"method\":\"login\", \"api_key\":\"" << apiKey << "\", \"id\":\"login\",\"jsonrpc\":\"2.0\"} \n";
-		queueDataSend(json.str());	
-	} else {
-		cout << "Handshake failed: " << error.message() << "\n";
 	}
 }
 
+// Dummy function: we will not verify if the endpoint is verified at the moment,
+// still there is a TLS handshake, so connection is encrypted
+bool beamStratum::verifyCertificate(bool preverified, boost::asio::ssl::verify_context& ctx)
+{
+	return true;
+}
+
+void beamStratum::handleHandshake(const boost::system::error_code& error) 
+{
+	if (!error) 
+	{
+		// Listen to receive stratum input
+		boost::asio::async_read_until(
+			*socket, 
+			responseBuffer, 
+			"\n",
+			boost::bind(&beamStratum::readStratum, this, boost::asio::placeholders::error));
+
+		if (!quiet) cout << "TLS Handshake O.K." << endl;
+		
+		connecting = false;
+
+		// The connection was successful. Send the login request
+		std::stringstream json;
+		json << "{\"method\":\"login\", \"api_key\":\"" << apiKey << "\", \"id\":\"login\",\"jsonrpc\":\"2.0\"} \n";
+		queueDataSend(json.str());
+	} 
+	else 
+	{
+		if (!quiet) cout << "Handshake failed: " << error.message() << "\n";
+	}
+}
 
 // Simple helper function that casts a hex string into byte array
-vector<uint8_t> parseHex (string input) {
+vector<uint8_t> parseHex (string input) 
+{
 	vector<uint8_t> result ;
 	result.reserve(input.length() / 2);
-	for (uint32_t i = 0; i < input.length(); i += 2){
+	for (uint32_t i = 0; i < input.length(); i += 2)
+	{
 		uint32_t byte;
 		std::istringstream hex_byte(input.substr(i, 2));
 		hex_byte >> std::hex >> byte;
 		result.push_back(static_cast<unsigned char>(byte));
 	}
+
 	return result;
 }
 
-
 // Main stratum read function, will be called on every received data
-void beamStratum::readStratum(const boost::system::error_code& err) {
-	if (!err) {
+void beamStratum::readStratum(const boost::system::error_code& err) 
+{
+	if (!err) 
+	{
 		// We just read something without problem.
 		std::istream is(&responseBuffer);
 		std::string response;
 		getline(is, response);
 
-		if (debug) cout << "Incomming Stratum: " << response << endl;
+		if (!quiet && debug) cout << "Incomming stratum: " << response << endl;
 
 		// Parse the input to a property tree
 		pt::iptree jsonTree;
-		try {
+		try 
+		{
 			istringstream jsonStream(response);
 			pt::read_json(jsonStream,jsonTree);
 
 			// This should be for any valid stratum
-			if (jsonTree.count("method") > 0) {	
+			if (jsonTree.count("method") > 0) 
+			{	
 				string method = jsonTree.get<string>("method");
 			
 				// Result to a node request
-				if (method.compare("result") == 0) {
+				if (method.compare("result") == 0) 
+				{
 					// A login reply
-					if (jsonTree.get<string>("id").compare("login") == 0) {
+					if (jsonTree.get<string>("id").compare("login") == 0) 
+					{
 						int32_t code = jsonTree.get<int32_t>("code");
-						if (code >= 0) {
-							cout << "Login at node accepted \n" << endl;
-							if (jsonTree.count("nonceprefix") > 0) {
+						if (code >= 0) 
+						{
+							if (!quiet) cout << "Login O.K. \n" << endl;
+							if (jsonTree.count("nonceprefix") > 0) 
+							{
 								string poolNonceStr = jsonTree.get<string>("nonceprefix");
 								poolNonce = parseHex(poolNonceStr);
-							} else {
+							} 
+							else 
+							{
 								poolNonce.clear();
 							}
-						} else {
-							cout << "Error: Login at node not accepted. Closing miner." << endl;
-							exit(0);
+						} 
+						else 
+						{
+							if (!quiet) cout << "Error: Login at node not accepted." << endl;
+
+							stopWorking();
 						}	
-					} else {	// A share reply
+					} 
+					else 
+					{
+						// A share reply
 						int32_t code = jsonTree.get<int32_t>("code");
-						if (code == 1) {
-							cout << "Solution for work id " << jsonTree.get<string>("id") << " accepted" << endl;
+						if (code == 1) 
+						{
+							if (!quiet) cout << "Solution for work id " << jsonTree.get<string>("id") << " accepted" << endl;
 							sharesAcc++;
-						} else {
-							cout << "Warning: Solution for work id " << jsonTree.get<string>("id") << " not accepted" << endl;
+						} 
+						else 
+						{
+							if (!quiet) cout << "Warning: Solution for work id " << jsonTree.get<string>("id") << " not accepted" << endl;
 							sharesRej++;
 						}
 					}
 				}
 
 				// A new job decription;
-				if (method.compare("job") == 0) {
+				if (method.compare("job") == 0) 
+				{
 					updateMutex.lock();
 					// Get new work load
 					string work = jsonTree.get<string>("input");
 					serverWork = parseHex(work);
 
 					// Get jobId of new job
-					workId =  jsonTree.get<uint64_t>("id");	
+					workId = jsonTree.get<uint64_t>("id");	
 					
 					// Get the target difficulty
-					uint32_t stratDiff =  jsonTree.get<uint32_t>("difficulty");
+					uint32_t stratDiff = jsonTree.get<uint32_t>("difficulty");
 					powDiff = beam::Difficulty(stratDiff);
-
-					// Nicehash support
-					if (jsonTree.count("nonceprefix") > 0) {
-						string poolNonceStr = jsonTree.get<string>("nonceprefix");
-						poolNonce = parseHex(poolNonceStr);
-					}
-
-
 					updateMutex.unlock();	
 
-					cout << "New work received with id " << workId << " at difficulty " << std::fixed << std::setprecision(0) << powDiff.ToFloat() << endl;	
+					if (!quiet) cout << "New work received id:difficulty " << workId << " : " << std::fixed << std::setprecision(0) << powDiff.ToFloat() << endl;
 				}
 
 				// Cancel a running job
-				if (method.compare("cancel") == 0) {
+				if (method.compare("cancel") == 0) 
+				{
 					updateMutex.lock();
 					// Get jobId of canceled job
 					uint64_t id =  jsonTree.get<uint64_t>("id");
@@ -238,31 +324,43 @@ void beamStratum::readStratum(const boost::system::error_code& err) {
 				}
 				t_current = time(NULL);
 
-				cout << "Solutions (A/R): " << sharesAcc << " / " << sharesRej << " Uptime: " << (int)(t_current-t_start) << " sec" << endl; 
+				if (!quiet) cout << "Solutions (accepted/rejected): " << sharesAcc << "/" << sharesRej << " Uptime: " << (int)(t_current-t_start) << " sec" << endl; 
 			}
 
-			
-
-		} catch(const pt::ptree_error &e) {
-			cout << "Json parse error: " << e.what() << endl; 
+		} 
+		catch(const pt::ptree_error &e) 
+		{
+			if (!quiet) cout << "Json parse error: " << e.what() << endl; 
 		}
 
 		// Prepare to continue reading
-		boost::asio::async_read_until(*socket, responseBuffer, "\n",
+		boost::asio::async_read_until(
+			*socket, 
+			responseBuffer, 
+			"\n",
         	boost::bind(&beamStratum::readStratum, this, boost::asio::placeholders::error));
 	}
 }
 
+bool beamStratum::isConnecting()
+{
+	return connecting;
+}
+
+bool beamStratum::hasConnection()
+{
+	return connected;
+}
 
 // Checking if we have valid work, else the GPUs will pause
-bool beamStratum::hasWork() {
+bool beamStratum::hasWork() 
+{
 	return (workId >= 0);
 }
 
-
 // function the clHost class uses to fetch new work
-void beamStratum::getWork(WorkDescription& wd, uint8_t* dataOut) {
-
+void beamStratum::getWork(WorkDescription& wd, uint8_t* dataOut) 
+{
 	// nonce is atomic, so every time we call this will get a nonce increased by one
 	uint64_t cliNonce = nonce.fetch_add(1);
 
@@ -271,7 +369,9 @@ void beamStratum::getWork(WorkDescription& wd, uint8_t* dataOut) {
 	uint32_t poolNonceBytes = min<uint32_t>(poolNonce.size(), 6); 	// Need some range left for miner
 	wd.nonce = (cliNonce << 8*poolNonceBytes);
 
-	for (uint32_t i=0; i<poolNonceBytes; i++) {			// Prefix pool nonce
+	for (uint32_t i=0; i<poolNonceBytes; i++) 
+	{
+		// Prefix pool nonce
 		noncePoint[i] = poolNonce[i];
 	}
 	
@@ -284,10 +384,11 @@ void beamStratum::getWork(WorkDescription& wd, uint8_t* dataOut) {
 	updateMutex.unlock();
 }
 
-
-void CompressArray(const unsigned char* in, size_t in_len,
-                   unsigned char* out, size_t out_len,
-                   size_t bit_len, size_t byte_pad) {
+void CompressArray(
+	const unsigned char* in, size_t in_len,
+    unsigned char* out, size_t out_len,
+    size_t bit_len, size_t byte_pad) 
+{
 	assert(bit_len >= 8);
 	assert(8*sizeof(uint32_t) >= bit_len);
 
@@ -302,13 +403,17 @@ void CompressArray(const unsigned char* in, size_t in_len,
 	uint32_t acc_value = 0;
 
 	size_t j = 0;
-	for (size_t i = 0; i < out_len; i++) {
+	for (size_t i = 0; i < out_len; i++) 
+	{
 		// When we have fewer than 8 bits left in the accumulator, read the next
 		// input element.
-		if (acc_bits < 8) {
-			if (j < in_len) {
+		if (acc_bits < 8) 
+		{
+			if (j < in_len) 
+			{
 				acc_value = acc_value << bit_len;
-				for (size_t x = byte_pad; x < in_width; x++) {
+				for (size_t x = byte_pad; x < in_width; x++) 
+				{
 					acc_value = acc_value | (
 					(
 					// Apply bit_len_mask across byte boundaries
@@ -318,7 +423,8 @@ void CompressArray(const unsigned char* in, size_t in_len,
 				j += in_width;
 				acc_bits += bit_len;
 			}
-			else {
+			else 
+			{
 				acc_value <<= 8 - acc_bits;
 				acc_bits += 8 - acc_bits;;
 			}
@@ -341,7 +447,8 @@ inline uint32_t htobe32(uint32_t x)
 #endif // WIN32
 
 // Big-endian so that lexicographic array comparison is equivalent to integer comparison
-void EhIndexToArray(const uint32_t i, unsigned char* array) {
+void EhIndexToArray(const uint32_t i, unsigned char* array) 
+{
 	static_assert(sizeof(uint32_t) == 4, "");
 	uint32_t bei = htobe32(i);
 	memcpy(array, &bei, sizeof(uint32_t));
@@ -349,22 +456,28 @@ void EhIndexToArray(const uint32_t i, unsigned char* array) {
 
 
 // Helper function that compresses the solution from 32 unsigned integers (128 bytes) to 104 bytes
-std::vector<unsigned char> GetMinimalFromIndices(std::vector<uint32_t> indices, size_t cBitLen) {
+std::vector<unsigned char> GetMinimalFromIndices(std::vector<uint32_t> indices, size_t cBitLen) 
+{
 	assert(((cBitLen+1)+7)/8 <= sizeof(uint32_t));
 	size_t lenIndices { indices.size()*sizeof(uint32_t) };
 	size_t minLen { (cBitLen+1)*lenIndices/(8*sizeof(uint32_t)) };
 	size_t bytePad { sizeof(uint32_t) - ((cBitLen+1)+7)/8 };
 	std::vector<unsigned char> array(lenIndices);
-	for (size_t i = 0; i < indices.size(); i++) {
+	for (size_t i = 0; i < indices.size(); i++) 
+	{
 		EhIndexToArray(indices[i], array.data()+(i*sizeof(uint32_t)));
 	}
 	std::vector<unsigned char> ret(minLen);
 	CompressArray(array.data(), lenIndices, ret.data(), minLen, cBitLen+1, bytePad);
+	
 	return ret;
 }
 
-bool beamStratum::testSolution(const beam::Difficulty& diff, const vector<uint32_t>& indices, vector<uint8_t>& compressed) {
-
+bool beamStratum::testSolution(
+	const beam::Difficulty& diff, 
+	const vector<uint32_t>& indices, 
+	vector<uint8_t>& compressed) 
+{
 	// get the compressed representation of the solution and check against target
 	compressed = GetMinimalFromIndices(indices,25);
 
@@ -374,8 +487,11 @@ bool beamStratum::testSolution(const beam::Difficulty& diff, const vector<uint32
 	return diff.IsTargetReached(hv);
 }
 
-void beamStratum::submitSolution(int64_t wId, uint64_t nonceIn, const std::vector<uint8_t>& compressed) {
-
+void beamStratum::submitSolution(
+	int64_t wId, 
+	uint64_t nonceIn, 
+	const std::vector<uint8_t>& compressed) 
+{
 	// The solutions target is low enough, lets submit it
 	vector<uint8_t> nonceBytes;
 			
@@ -383,12 +499,14 @@ void beamStratum::submitSolution(int64_t wId, uint64_t nonceIn, const std::vecto
 	*((uint64_t*) nonceBytes.data()) = nonceIn;
 
 	stringstream nonceHex;
-	for (int c=0; c<nonceBytes.size(); c++) {
+	for (int c=0; c<nonceBytes.size(); c++) 
+	{
 		nonceHex << std::setfill('0') << std::setw(2) << std::hex << (unsigned) nonceBytes[c];
 	}
 
 	stringstream solutionHex;
-	for (int c=0; c<compressed.size(); c++) {
+	for (int c=0; c<compressed.size(); c++) 
+	{
 		solutionHex << std::setfill('0') << std::setw(2) << std::hex << (unsigned) compressed[c];
 	}	
 			
@@ -399,24 +517,32 @@ void beamStratum::submitSolution(int64_t wId, uint64_t nonceIn, const std::vecto
 
 	queueDataSend(json.str());	
 
-	cout << "Submitting solution to job " << wId << " with nonce " <<  nonceHex.str() << endl;
+	if (!quiet) cout << "Submitting solution to job " << wId << " with nonce " <<  nonceHex.str() << endl;
 }
-
 
 // Will be called by clHost class for check & submit
-void beamStratum::handleSolution(const WorkDescription& wd, vector<uint32_t> &indices) {
-
+void beamStratum::handleSolution(const WorkDescription& wd, vector<uint32_t> &indices) 
+{
 	std::vector<uint8_t> compressed;
 	if (testSolution(wd.powDiff, indices, compressed))
+	{
 		std::thread (&beamStratum::submitSolution,this,wd.workId,wd.nonce,std::move(compressed)).detach();
+	}
 }
 
+beamStratum::beamStratum(
+	string hostIn, 
+	string portIn, 
+	string apiKeyIn, 
+	bool debugIn,
+	bool quietIn) 
+	: res(io_service), context(boost::asio::ssl::context::tlsv12) 
+	{
 
-beamStratum::beamStratum(string hostIn, string portIn, string apiKeyIn, bool debugIn) : res(io_service), context(boost::asio::ssl::context::tlsv12)  {
-
-	context.set_options(	  boost::asio::ssl::context::default_workarounds
+	context.set_options(
+			 	 boost::asio::ssl::context::default_workarounds
 				| boost::asio::ssl::context::no_sslv2
-                		| boost::asio::ssl::context::no_sslv3
+                | boost::asio::ssl::context::no_sslv3
 				| boost::asio::ssl::context::no_tlsv1
 				| boost::asio::ssl::context::single_dh_use);
 
@@ -424,6 +550,7 @@ beamStratum::beamStratum(string hostIn, string portIn, string apiKeyIn, bool deb
 	port = portIn;
 	apiKey = apiKeyIn;
 	debug = debugIn;
+	quiet = quietIn;
 
 	// Assign the work field and nonce
 	serverWork.assign(32,(uint8_t) 0);
